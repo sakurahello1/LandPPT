@@ -3,8 +3,9 @@ Configuration management for LandPPT AI features
 """
 
 import os
+import logging
 from typing import Optional, Dict, Any, ClassVar
-from pydantic import Field
+from pydantic import Field, AliasChoices
 from pydantic_settings import BaseSettings
 from dotenv import load_dotenv
 
@@ -37,6 +38,33 @@ class AIConfig(BaseSettings):
     google_base_url: str = Field(default="https://generativelanguage.googleapis.com", env="GOOGLE_BASE_URL")
     google_model: str = Field(default="gemini-1.5-flash", env="GOOGLE_MODEL")
     
+    # Doubao Configuration
+    doubao_api_key: Optional[str] = Field(
+        default=None,
+        env="DOUBAO_API_KEY",
+        validation_alias=AliasChoices("DOUBAO_API_KEY", "ARK_API_KEY"),
+    )
+    doubao_base_url: str = Field(
+        default="https://ark.cn-beijing.volces.com/api/v3",
+        env="DOUBAO_BASE_URL",
+        validation_alias=AliasChoices("DOUBAO_BASE_URL", "ARK_BASE_URL"),
+    )
+    doubao_model: str = Field(
+        default="doubao-seed-1-6-251015",
+        env="DOUBAO_MODEL",
+        validation_alias=AliasChoices("DOUBAO_MODEL", "ARK_MODEL_ID"),
+    )
+    doubao_timeout: int = Field(
+        default=60,
+        env="DOUBAO_TIMEOUT",
+        validation_alias=AliasChoices("DOUBAO_TIMEOUT", "ARK_TIMEOUT"),
+    )
+    doubao_thinking_mode: Optional[str] = Field(
+        default=None,
+        env="DOUBAO_THINKING_MODE",
+        validation_alias=AliasChoices("DOUBAO_THINKING_MODE", "ARK_THINKING_MODE"),
+    )
+
     # Azure OpenAI Configuration
     azure_openai_api_key: Optional[str] = Field(default=None, env="AZURE_OPENAI_API_KEY")
     azure_openai_endpoint: Optional[str] = Field(default=None, env="AZURE_OPENAI_ENDPOINT")
@@ -256,6 +284,17 @@ class AIConfig(BaseSettings):
                 "temperature": self.temperature,
                 "top_p": self.top_p,
             },
+            "doubao": {
+                "api_key": self.doubao_api_key,
+                "base_url": self.doubao_base_url,
+                "model": self.doubao_model,
+                "max_tokens": self.max_tokens,
+                "temperature": self.temperature,
+                "top_p": self.top_p,
+                "timeout": self.doubao_timeout,
+                "thinking": ({"type": self.doubao_thinking_mode}
+                              if self.doubao_thinking_mode else None),
+            },
             "azure_openai": {
                 "api_key": self.azure_openai_api_key,
                 "endpoint": self.azure_openai_endpoint,
@@ -295,6 +334,8 @@ class AIConfig(BaseSettings):
             return bool(config.get("api_key"))
         elif provider == "google" or provider == "gemini":
             return bool(config.get("api_key"))
+        elif provider == "doubao":
+            return bool(config.get("api_key"))
         elif provider == "azure_openai":
             return bool(config.get("api_key") and config.get("endpoint"))
         elif provider == "ollama":
@@ -309,7 +350,7 @@ class AIConfig(BaseSettings):
         providers = []
 
         # Add built-in providers
-        for provider in ["openai", "anthropic", "google", "gemini", "azure_openai", "ollama", "302ai"]:
+        for provider in ["openai", "anthropic", "google", "gemini", "doubao", "azure_openai", "ollama", "302ai"]:
             if self.is_provider_available(provider):
                 providers.append(provider)
 
@@ -343,6 +384,35 @@ def reload_ai_config():
     ai_config.google_api_key = os.environ.get('GOOGLE_API_KEY', ai_config.google_api_key)
     ai_config.google_base_url = os.environ.get('GOOGLE_BASE_URL', ai_config.google_base_url)
     ai_config.google_model = os.environ.get('GOOGLE_MODEL', ai_config.google_model)
+    ai_config.doubao_api_key = (
+        os.environ.get('DOUBAO_API_KEY')
+        or os.environ.get('ARK_API_KEY')
+        or ai_config.doubao_api_key
+    )
+    ai_config.doubao_base_url = (
+        os.environ.get('DOUBAO_BASE_URL')
+        or os.environ.get('ARK_BASE_URL')
+        or ai_config.doubao_base_url
+    )
+    ai_config.doubao_model = (
+        os.environ.get('DOUBAO_MODEL')
+        or os.environ.get('ARK_MODEL_ID')
+        or ai_config.doubao_model
+    )
+    doubao_timeout_env = (
+        os.environ.get('DOUBAO_TIMEOUT')
+        or os.environ.get('ARK_TIMEOUT')
+        or str(ai_config.doubao_timeout)
+    )
+    try:
+        ai_config.doubao_timeout = int(doubao_timeout_env)
+    except (TypeError, ValueError):
+        logger = logging.getLogger(__name__)
+        logger.warning("Invalid Doubao timeout value '%s'; keeping previous value", doubao_timeout_env)
+
+    doubao_thinking_env = os.environ.get('DOUBAO_THINKING_MODE') or os.environ.get('ARK_THINKING_MODE')
+    ai_config.doubao_thinking_mode = (ai_config._normalize_optional_str(doubao_thinking_env)
+                                      if doubao_thinking_env is not None else ai_config.doubao_thinking_mode)
     ai_config.ai_302ai_api_key = os.environ.get('302AI_API_KEY', ai_config.ai_302ai_api_key)
     ai_config.ai_302ai_base_url = os.environ.get('302AI_BASE_URL', ai_config.ai_302ai_base_url)
     ai_config.ai_302ai_model = os.environ.get('302AI_MODEL', ai_config.ai_302ai_model)
