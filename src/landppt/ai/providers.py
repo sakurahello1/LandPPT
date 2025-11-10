@@ -8,10 +8,44 @@ import logging
 import re
 from typing import List, Dict, Any, Optional, AsyncGenerator, Union, Tuple
 
-from .base import AIProvider, AIMessage, AIResponse, MessageRole, TextContent, ImageContent, MessageContentType
+import httpx
+
+try:
+    from volcenginesdkarkruntime import Ark
+except ImportError:  # pragma: no cover - optional dependency
+    Ark = None
+
+from .base import (
+    AIProvider,
+    AIMessage,
+    AIResponse,
+    MessageRole,
+    TextContent,
+    ImageContent,
+    VideoContent,
+    MessageContentType,
+)
 from ..core.config import ai_config
 
 logger = logging.getLogger(__name__)
+
+
+def filter_think_content(content: Any) -> Any:
+    """Remove internal reasoning enclosed in think tags from model output"""
+    if not isinstance(content, str) or not content:
+        return content
+
+    patterns = [
+        r"<think[\s\S]*?</think>",
+        r"＜think＞[\s\S]*?＜/think＞",
+        r"【think】[\s\S]*?【/think】",
+    ]
+
+    filtered = content
+    for pattern in patterns:
+        filtered = re.sub(pattern, "", filtered, flags=re.IGNORECASE)
+
+    return filtered.strip()
 
 
 class OpenAIProvider(AIProvider):
@@ -50,6 +84,32 @@ class OpenAIProvider(AIProvider):
                         "type": "image_url",
                         "image_url": part.image_url
                     })
+                elif isinstance(part, VideoContent):
+                    video_url = part.video_url.get("url", "") if isinstance(part.video_url, dict) else ""
+                    placeholder = video_url or "[video content]"
+                    content_parts.append({
+                        "type": "text",
+                        "text": f"[Video reference: {placeholder}]"
+                    })
+                elif isinstance(part, dict):
+                    part_type = part.get("type")
+                    if part_type == MessageContentType.IMAGE_URL:
+                        content_parts.append({
+                            "type": "image_url",
+                            "image_url": part.get("image_url", {})
+                        })
+                    elif part_type == MessageContentType.VIDEO_URL:
+                        video_payload = part.get("video_url", {})
+                        ref = video_payload.get("url", "") if isinstance(video_payload, dict) else ""
+                        content_parts.append({
+                            "type": "text",
+                            "text": f"[Video reference: {ref or '[video content]'}]"
+                        })
+                    else:
+                        content_parts.append({
+                            "type": "text",
+                            "text": json.dumps(part, ensure_ascii=False)
+                        })
             openai_message["content"] = content_parts
         else:
             # Fallback to string representation
@@ -61,39 +121,7 @@ class OpenAIProvider(AIProvider):
         return openai_message
 
     def _filter_think_content(self, content: str) -> str:
-        """
-        Filter out content within think tags in all forms
-        Supports: <think>, <think>, ＜think＞, 【think】 and their closing tags
-        This prevents internal reasoning from being exposed in the output
-        """
-        if not content:
-            return content
-
-        import re
-
-        # Pattern to match different forms of think tags (opening and closing)
-        # Matches: <think>...</think>, <think>...</think>, ＜think＞...＜/think＞, 【think】...【/think】
-        # Also handles self-closing and nested tags
-        patterns = [
-            r'<think[\s\S]*?></think>',           # <think>...</think>
-        ]
-
-        # Apply all patterns
-        filtered_content = content
-        for pattern in patterns:
-            filtered_content = re.sub(pattern, '', filtered_content, flags=re.IGNORECASE)
-
-        # # Clean up any extra whitespace that might be left behind
-        # # Remove multiple consecutive empty lines
-        # filtered_content = re.sub(r'\n\s*\n\s*\n\s*\n', '', filtered_content)
-
-        # # Remove empty lines at the beginning and end
-        # filtered_content = filtered_content.strip()
-
-        # # Clean up extra spaces within lines
-        # filtered_content = re.sub(r' +', ' ', filtered_content)
-
-        return filtered_content
+        return filter_think_content(content)
     
     async def chat_completion(self, messages: List[AIMessage], **kwargs) -> AIResponse:
         """Generate chat completion using OpenAI"""
@@ -302,6 +330,33 @@ class AnthropicProvider(AIProvider):
                             "type": "text",
                             "text": f"[Image: {image_url}]"
                         })
+                elif isinstance(part, VideoContent):
+                    video_url = part.video_url.get("url", "") if isinstance(part.video_url, dict) else ""
+                    content_parts.append({
+                        "type": "text",
+                        "text": f"[Video reference: {video_url or '[video content]'}]"
+                    })
+                elif isinstance(part, dict):
+                    part_type = part.get("type")
+                    if part_type == MessageContentType.IMAGE_URL:
+                        image_payload = part.get("image_url", {})
+                        url = image_payload.get("url", "") if isinstance(image_payload, dict) else ""
+                        content_parts.append({
+                            "type": "text",
+                            "text": f"[Image: {url}]"
+                        })
+                    elif part_type == MessageContentType.VIDEO_URL:
+                        video_payload = part.get("video_url", {})
+                        url = video_payload.get("url", "") if isinstance(video_payload, dict) else ""
+                        content_parts.append({
+                            "type": "text",
+                            "text": f"[Video reference: {url or '[video content]'}]"
+                        })
+                    else:
+                        content_parts.append({
+                            "type": "text",
+                            "text": json.dumps(part, ensure_ascii=False)
+                        })
             anthropic_message["content"] = content_parts
         else:
             # Fallback to string representation
@@ -417,6 +472,21 @@ class GoogleProvider(AIProvider):
                     for part in msg.content:
                         if isinstance(part, TextContent):
                             message_parts.append(part.text)
+                        elif isinstance(part, VideoContent):
+                            video_url = part.video_url.get("url", "") if isinstance(part.video_url, dict) else ""
+                            message_parts.append(f"[Video reference: {video_url or '[video content]'}]")
+                        elif isinstance(part, dict):
+                            part_type = part.get("type")
+                            if part_type == MessageContentType.VIDEO_URL:
+                                video_payload = part.get("video_url", {})
+                                url = video_payload.get("url", "") if isinstance(video_payload, dict) else ""
+                                message_parts.append(f"[Video reference: {url or '[video content]'}]")
+                            elif part_type == MessageContentType.IMAGE_URL:
+                                image_payload = part.get("image_url", {})
+                                url = image_payload.get("url", "") if isinstance(image_payload, dict) else ""
+                                message_parts.append(f"[Image reference: {url}]")
+                            else:
+                                message_parts.append(json.dumps(part, ensure_ascii=False))
                     parts.append(" ".join(message_parts))
                 else:
                     parts.append(role_prefix + str(msg.content))
@@ -436,6 +506,13 @@ class GoogleProvider(AIProvider):
                     for part in msg.content:
                         if isinstance(part, TextContent):
                             text_parts.append(part.text)
+                        elif isinstance(part, VideoContent):
+                            # Flush accumulated text before noting video content
+                            if len(text_parts) > 1 or text_parts[0]:
+                                content_parts.append(" ".join(text_parts))
+                                text_parts = []
+                            video_url = part.video_url.get("url", "") if isinstance(part.video_url, dict) else ""
+                            content_parts.append(f"请参考视频 {video_url or '[未提供链接]'} 进行分析")
                         elif isinstance(part, ImageContent):
                             # Add accumulated text first
                             if len(text_parts) > 1 or text_parts[0]:
@@ -484,6 +561,24 @@ class GoogleProvider(AIProvider):
                                     content_parts.append("请参考上传的图片进行设计。图片包含了重要的设计参考信息，请根据图片的风格、色彩、布局等元素来生成模板。")
                                 else:
                                     content_parts.append(f"请参考图片 {image_url} 进行设计")
+                        elif isinstance(part, dict):
+                            part_type = part.get("type")
+                            if part_type == MessageContentType.IMAGE_URL:
+                                if len(text_parts) > 1 or text_parts[0]:
+                                    content_parts.append(" ".join(text_parts))
+                                    text_parts = []
+                                image_payload = part.get("image_url", {})
+                                url = image_payload.get("url", "") if isinstance(image_payload, dict) else ""
+                                content_parts.append(f"请参考图片 {url} 进行设计")
+                            elif part_type == MessageContentType.VIDEO_URL:
+                                if len(text_parts) > 1 or text_parts[0]:
+                                    content_parts.append(" ".join(text_parts))
+                                    text_parts = []
+                                video_payload = part.get("video_url", {})
+                                url = video_payload.get("url", "") if isinstance(video_payload, dict) else ""
+                                content_parts.append(f"请参考视频 {url or '[未提供链接]'} 进行分析")
+                            else:
+                                text_parts.append(json.dumps(part, ensure_ascii=False))
 
                     # Add remaining text
                     if len(text_parts) > 1 or (len(text_parts) == 1 and text_parts[0]):
@@ -621,6 +716,285 @@ class GoogleProvider(AIProvider):
         messages = [AIMessage(role=MessageRole.USER, content=prompt)]
         return await self.chat_completion(messages, **kwargs)
 
+
+class DoubaoProvider(AIProvider):
+    """Doubao (Volcengine Ark) API provider"""
+
+    DEFAULT_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
+
+    def __init__(self, config: Dict[str, Any]):
+        super().__init__(config)
+        self.api_key = config.get("api_key")
+        self.base_url = config.get("base_url", self.DEFAULT_BASE_URL)
+        self.timeout = config.get("timeout", 60)
+        self.extra_headers = config.get("extra_headers") or {}
+        self._ark_client = None
+        self._ark_client_api_key = None
+        self._ark_client_base_url = None
+
+        if Ark is not None and self.api_key:
+            self._ark_client = self._create_ark_client(self.api_key, self.base_url)
+
+    def _create_ark_client(self, api_key: str, base_url: str):
+        try:
+            return Ark(api_key=api_key, base_url=base_url)
+        except TypeError:
+            # Some versions may expect positional arguments
+            return Ark(base_url=base_url, api_key=api_key)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.warning("Failed to initialize Ark client, will fall back to HTTP: %s", exc)
+            return None
+
+    def _ensure_ark_client(self, api_key: str, base_url: str):
+        if Ark is None:
+            return None
+
+        normalized_base_url = (base_url or self.DEFAULT_BASE_URL).rstrip("/")
+        normalized_key = api_key or self.api_key
+
+        if not normalized_key:
+            return None
+
+        if (
+            self._ark_client is None
+            or self._ark_client_api_key != normalized_key
+            or self._ark_client_base_url != normalized_base_url
+        ):
+            self._ark_client = self._create_ark_client(normalized_key, normalized_base_url)
+            self._ark_client_api_key = normalized_key
+            self._ark_client_base_url = normalized_base_url
+
+        return self._ark_client
+
+    def _convert_message(self, message: AIMessage) -> Dict[str, Any]:
+        """Convert AIMessage to Doubao payload format"""
+        payload: Dict[str, Any] = {"role": message.role.value}
+
+        if isinstance(message.content, str):
+            payload["content"] = [{"type": "text", "text": message.content}]
+        elif isinstance(message.content, list):
+            parts: List[Dict[str, Any]] = []
+            for part in message.content:
+                if isinstance(part, TextContent):
+                    parts.append({"type": "text", "text": part.text})
+                elif isinstance(part, ImageContent):
+                    parts.append({"type": "image_url", "image_url": part.image_url})
+                elif isinstance(part, VideoContent):
+                    video_payload = part.video_url if isinstance(part.video_url, dict) else {"url": str(part.video_url)}
+                    parts.append({"type": "video_url", "video_url": video_payload})
+                elif isinstance(part, dict):
+                    part_type = part.get("type")
+                    if part_type in {"text", "image_url", "video_url", "json"}:
+                        parts.append(part)
+                    else:
+                        parts.append({"type": "text", "text": json.dumps(part, ensure_ascii=False)})
+            payload["content"] = parts or [{"type": "text", "text": str(message.content)}]
+        else:
+            payload["content"] = [{"type": "text", "text": str(message.content)}]
+
+        if message.name:
+            payload["name"] = message.name
+
+        return payload
+
+    def _prepare_headers(self, config: Dict[str, Any], api_key: str) -> Dict[str, str]:
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        extra = config.get("extra_headers") or self.extra_headers
+        if isinstance(extra, dict):
+            headers.update({str(k): str(v) for k, v in extra.items()})
+        return headers
+
+    def _build_request_kwargs(self, messages: List[AIMessage], config: Dict[str, Any]) -> Dict[str, Any]:
+        kwargs: Dict[str, Any] = {
+            "model": config.get("model", self.model),
+            "messages": [self._convert_message(msg) for msg in messages],
+            "temperature": config.get("temperature", 0.7),
+            "top_p": config.get("top_p", 1.0),
+        }
+
+        if config.get("max_tokens") is not None:
+            kwargs["max_tokens"] = config.get("max_tokens")
+
+        if config.get("response_format") is not None:
+            kwargs["response_format"] = config.get("response_format")
+
+        if config.get("thinking") is not None:
+            kwargs["thinking"] = config.get("thinking")
+
+        if config.get("extra_body") is not None:
+            kwargs["extra_body"] = config.get("extra_body")
+
+        if config.get("stream"):
+            logger.warning("Doubao provider streaming not supported; ignoring stream=True request")
+
+        return kwargs
+
+    def _build_payload_from_kwargs(self, request_kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        payload = {
+            "model": request_kwargs["model"],
+            "messages": request_kwargs["messages"],
+            "temperature": request_kwargs.get("temperature", 0.7),
+            "top_p": request_kwargs.get("top_p", 1.0),
+        }
+
+        if "max_tokens" in request_kwargs:
+            payload["max_tokens"] = request_kwargs["max_tokens"]
+        if "response_format" in request_kwargs:
+            payload["response_format"] = request_kwargs["response_format"]
+        if "thinking" in request_kwargs:
+            payload["thinking"] = request_kwargs["thinking"]
+        if "extra_body" in request_kwargs and isinstance(request_kwargs["extra_body"], dict):
+            payload.update(request_kwargs["extra_body"])
+
+        return payload
+
+    async def _call_ark(self, request_kwargs: Dict[str, Any], api_key: str, base_url: str) -> Optional[Dict[str, Any]]:
+        client = self._ensure_ark_client(api_key, base_url)
+        if client is None:
+            return None
+
+        loop = asyncio.get_running_loop()
+
+        def _execute_call():
+            return client.chat.completions.create(**request_kwargs)
+
+        try:
+            response = await loop.run_in_executor(None, _execute_call)
+        except Exception as exc:
+            logger.warning("Doubao Ark SDK call failed: %s", exc)
+            return None
+
+        try:
+            if hasattr(response, "model_dump"):
+                return response.model_dump()
+            if hasattr(response, "model_dump_json"):
+                return json.loads(response.model_dump_json())
+            if hasattr(response, "to_dict"):
+                return response.to_dict()
+            if hasattr(response, "dict"):
+                return response.dict()
+        except Exception as exc:
+            logger.warning("Failed to serialize Ark SDK response: %s", exc)
+
+        # Fallback serialization
+        return json.loads(json.dumps(response, default=lambda o: getattr(o, "__dict__", str(o))))
+
+    async def _call_http(self, payload: Dict[str, Any], config: Dict[str, Any], api_key: str, base_url: str) -> Dict[str, Any]:
+        headers = self._prepare_headers(config, api_key)
+        url = f"{base_url.rstrip('/')}/chat/completions"
+
+        try:
+            async with httpx.AsyncClient(timeout=config.get("timeout", self.timeout)) as client:
+                response = await client.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            logger.error("Doubao API returned error %s: %s", exc.response.status_code, exc.response.text)
+            raise
+        except Exception as exc:
+            logger.error("Doubao API request failed: %s", exc)
+            raise
+
+        try:
+            return response.json()
+        except ValueError as exc:
+            logger.error("Failed to decode Doubao response as JSON: %s", exc)
+            raise
+
+    def _format_response_content(self, content: Any) -> str:
+        if isinstance(content, list):
+            text_fragments: List[str] = []
+            for part in content:
+                if isinstance(part, dict):
+                    part_type = part.get("type")
+                    if part_type == "text":
+                        text_fragments.append(part.get("text", ""))
+                    elif part_type == "json":
+                        text_fragments.append(json.dumps(part.get("json"), ensure_ascii=False))
+                    elif part_type in {"image_url", "video_url"}:
+                        payload = part.get(part_type, {})
+                        url = payload.get("url") if isinstance(payload, dict) else None
+                        if url:
+                            text_fragments.append(f"[{part_type}]: {url}")
+                    elif "content" in part:
+                        text_fragments.append(str(part["content"]))
+                else:
+                    text_fragments.append(str(part))
+            content = "\n".join(fragment for fragment in text_fragments if fragment)
+        elif isinstance(content, dict):
+            content = json.dumps(content, ensure_ascii=False)
+        elif content is None:
+            content = ""
+
+        if not isinstance(content, str):
+            content = str(content)
+
+        return filter_think_content(content)
+
+    async def chat_completion(self, messages: List[AIMessage], **kwargs) -> AIResponse:
+        config = self._merge_config(**kwargs)
+        api_key = config.get("api_key") or self.api_key
+        if not api_key:
+            raise RuntimeError("Doubao API key not configured")
+
+        base_url = config.get("base_url", self.base_url or self.DEFAULT_BASE_URL)
+        request_kwargs = self._build_request_kwargs(messages, config)
+
+        data: Optional[Dict[str, Any]] = None
+
+        if Ark is not None:
+            data = await self._call_ark(request_kwargs, api_key, base_url)
+
+        if data is None:
+            payload = self._build_payload_from_kwargs(request_kwargs)
+            data = await self._call_http(payload, config, api_key, base_url)
+
+        finish_reason = None
+        raw_content: Any = ""
+
+        if isinstance(data, dict):
+            choices = data.get("choices")
+            if choices:
+                first_choice = choices[0]
+                finish_reason = first_choice.get("finish_reason")
+                message_payload = first_choice.get("message") or {}
+                raw_content = message_payload.get("content", "")
+            elif "output" in data:
+                raw_content = data["output"]
+            else:
+                raw_content = data
+        else:
+            raw_content = data
+
+        content_text = self._format_response_content(raw_content)
+
+        usage_data = data.get("usage", {}) if isinstance(data, dict) else {}
+        prompt_tokens = usage_data.get("prompt_tokens") or usage_data.get("input_tokens") or 0
+        completion_tokens = usage_data.get("completion_tokens") or usage_data.get("output_tokens") or 0
+        total_tokens = usage_data.get("total_tokens") or (prompt_tokens + completion_tokens)
+
+        model_name = (
+            data.get("model") if isinstance(data, dict) else None
+        ) or config.get("model", self.model)
+
+        return AIResponse(
+            content=content_text,
+            model=model_name,
+            usage={
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": total_tokens,
+            },
+            finish_reason=finish_reason or "stop",
+            metadata={"provider": "doubao"}
+        )
+
+    async def text_completion(self, prompt: str, **kwargs) -> AIResponse:
+        messages = [AIMessage(role=MessageRole.USER, content=prompt)]
+        return await self.chat_completion(messages, **kwargs)
+
 class OllamaProvider(AIProvider):
     """Ollama local model provider"""
     
@@ -708,6 +1082,7 @@ class AIProviderFactory:
         "anthropic": AnthropicProvider,
         "google": GoogleProvider,
         "gemini": GoogleProvider,  # Alias for google
+        "doubao": DoubaoProvider,
         "ollama": OllamaProvider,
         "302ai": OpenAIProvider,  # 302.AI uses OpenAI-compatible API
     }

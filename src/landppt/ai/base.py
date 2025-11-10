@@ -17,11 +17,17 @@ class MessageContentType(str, Enum):
     """Message content types for multimodal support"""
     TEXT = "text"
     IMAGE_URL = "image_url"
+    VIDEO_URL = "video_url"
 
 class ImageContent(BaseModel):
     """Image content for multimodal messages"""
     type: MessageContentType = MessageContentType.IMAGE_URL
     image_url: Dict[str, str]  # {"url": "data:image/jpeg;base64,..." or "http://..."}
+
+class VideoContent(BaseModel):
+    """Video content for multimodal messages"""
+    type: MessageContentType = MessageContentType.VIDEO_URL
+    video_url: Dict[str, Any]
 
 class TextContent(BaseModel):
     """Text content for multimodal messages"""
@@ -31,7 +37,10 @@ class TextContent(BaseModel):
 class AIMessage(BaseModel):
     """AI message model with multimodal support"""
     role: MessageRole
-    content: Union[str, List[Union[TextContent, ImageContent]]]  # Support both simple string and multimodal content
+    content: Union[
+        str,
+        List[Union[TextContent, ImageContent, VideoContent, Dict[str, Any]]]
+    ]  # Support both simple string and multimodal content
     name: Optional[str] = None
 
 class AIResponse(BaseModel):
