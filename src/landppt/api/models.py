@@ -9,10 +9,42 @@ import uuid
 
 # OpenAI Compatible Models
 
+class TextContentItem(BaseModel):
+    type: Literal["text"]
+    text: str
+
+
+class ImageURLContentItem(BaseModel):
+    type: Literal["image_url"]
+    image_url: Dict[str, Any]
+
+
+class VideoURLContentItem(BaseModel):
+    type: Literal["video_url"]
+    video_url: Dict[str, Any]
+
+
+MultimodalContentItem = Union[
+    TextContentItem,
+    ImageURLContentItem,
+    VideoURLContentItem,
+    Dict[str, Any]
+]
+
+
 class ChatMessage(BaseModel):
     role: Literal["system", "user", "assistant"] = Field(..., description="The role of the message author")
-    content: str = Field(..., description="The content of the message")
+    content: Union[str, List[MultimodalContentItem]] = Field(..., description="The content of the message, supports text or multimodal payloads")
     name: Optional[str] = Field(None, description="The name of the author of this message")
+
+
+class ResponseFormat(BaseModel):
+    type: Literal["json_schema", "json_object", "text"] = Field(..., description="Desired response format type")
+    json_schema: Optional[Dict[str, Any]] = Field(None, description="JSON schema definition when type is 'json_schema'")
+
+
+class ThinkingConfig(BaseModel):
+    type: str = Field(..., description="Controls deep thinking capability, e.g. 'enabled' or 'disabled'")
 
 class ChatCompletionRequest(BaseModel):
     model: str = Field(..., description="ID of the model to use")
@@ -26,6 +58,8 @@ class ChatCompletionRequest(BaseModel):
     presence_penalty: Optional[float] = Field(0, ge=-2, le=2, description="Presence penalty parameter")
     frequency_penalty: Optional[float] = Field(0, ge=-2, le=2, description="Frequency penalty parameter")
     user: Optional[str] = Field(None, description="A unique identifier representing your end-user")
+    response_format: Optional[ResponseFormat] = Field(None, description="Structured output configuration")
+    thinking: Optional[ThinkingConfig] = Field(None, description="Controls deep thinking behavior for supported models")
 
 class CompletionRequest(BaseModel):
     model: str = Field(..., description="ID of the model to use")
