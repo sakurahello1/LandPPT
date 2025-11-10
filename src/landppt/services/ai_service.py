@@ -91,11 +91,13 @@ class AIService:
             ))
 
             # Generate response using AI provider
+            provider_kwargs = self._build_chat_provider_kwargs(
+                request,
+                request.max_tokens or ai_config.max_tokens
+            )
             response = await self.ai_provider.chat_completion(
                 messages=ai_messages,
-                max_tokens=request.max_tokens or ai_config.max_tokens,
-                temperature=request.temperature or ai_config.temperature,
-                top_p=request.top_p or ai_config.top_p
+                **provider_kwargs
             )
 
             return response.content
@@ -147,11 +149,13 @@ class AIService:
             ))
 
             # Generate response using AI provider
+            provider_kwargs = self._build_chat_provider_kwargs(
+                request,
+                request.max_tokens or min(ai_config.max_tokens, 1000)
+            )
             response = await self.ai_provider.chat_completion(
                 messages=ai_messages,
-                max_tokens=request.max_tokens or min(ai_config.max_tokens, 1000),  # Use smaller limit for general chat
-                temperature=request.temperature or ai_config.temperature,
-                top_p=request.top_p or ai_config.top_p
+                **provider_kwargs
             )
 
             return response.content
@@ -309,6 +313,25 @@ Try saying something like: "Create a PPT about artificial intelligence for begin
     def _contains_chinese(self, text: str) -> bool:
         """Check if text contains Chinese characters"""
         return bool(re.search(r'[\u4e00-\u9fff]', text))
+
+    def _build_chat_provider_kwargs(self, request: ChatCompletionRequest, max_tokens: int) -> Dict[str, Any]:
+        """Compose provider kwargs including structured output config"""
+        kwargs: Dict[str, Any] = {
+            "max_tokens": max_tokens,
+            "temperature": request.temperature if request.temperature is not None else ai_config.temperature,
+            "top_p": request.top_p if request.top_p is not None else ai_config.top_p,
+        }
+
+        if request.response_format is not None:
+            kwargs["response_format"] = request.response_format.model_dump(exclude_none=True)
+
+        if request.thinking is not None:
+            kwargs["thinking"] = request.thinking.model_dump(exclude_none=True)
+
+        if request.stream:
+            kwargs["stream"] = request.stream
+
+        return kwargs
     
     async def _generate_outline_response(self, ppt_info: Dict[str, Any]) -> str:
         """Generate PPT outline response"""

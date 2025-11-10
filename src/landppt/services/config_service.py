@@ -44,6 +44,12 @@ class ConfigService:
             "google_api_key": {"type": "password", "category": "ai_providers"},
             "google_base_url": {"type": "url", "category": "ai_providers", "default": "https://generativelanguage.googleapis.com"},
             "google_model": {"type": "text", "category": "ai_providers", "default": "gemini-2.5-flash"},
+
+            "doubao_api_key": {"type": "password", "category": "ai_providers"},
+            "doubao_base_url": {"type": "url", "category": "ai_providers", "default": "https://ark.cn-beijing.volces.com/api/v3"},
+            "doubao_model": {"type": "text", "category": "ai_providers", "default": "doubao-seed-1-6-251015"},
+            "doubao_timeout": {"type": "number", "category": "ai_providers", "default": "60"},
+            "doubao_thinking_mode": {"type": "text", "category": "ai_providers", "default": ""},
             
             "azure_openai_api_key": {"type": "password", "category": "ai_providers"},
             "azure_openai_endpoint": {"type": "url", "category": "ai_providers"},
