@@ -71,7 +71,7 @@
         <h3 style="color: #2c3e50; margin-bottom: 20px; text-align: center;">🔧 AI 提供者详情配置</h3>
 
         <div class="grid">
-            {% for provider in ["openai", "anthropic", "google", "azure_openai", "ollama", "302ai"] %}
+            {% for provider in provider_options %}
             <div class="card provider-config-card" data-provider="{{ provider }}">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
                     <h4 style="color: #2c3e50; margin: 0;">
@@ -81,6 +81,8 @@
                             🧠 Anthropic Claude
                         {% elif provider == "google" %}
                             🌟 Google Gemini
+                        {% elif provider == "doubao" %}
+                            🐼 豆包 (字节跳动)
                         {% elif provider == "azure_openai" %}
                             ☁️ Azure OpenAI
                         {% elif provider == "ollama" %}
@@ -174,6 +176,38 @@
                             <input type="text" name="google_model"
                                    value="{{ current_config.get('google_model', '') }}"
                                    placeholder="{{ current_config.get('google_model', 'gemini-2.5-flash') }}">
+                        </div>
+                    {% elif provider == "doubao" %}
+                        <div class="form-group">
+                            <label>API Key:</label>
+                            <input type="password" name="doubao_api_key" placeholder="请输入 Ark API Key"
+                                   value="{{ current_config.get('doubao_api_key', '') }}"
+                                   style="font-family: monospace; font-size: 0.9em;">
+                        </div>
+                        <div class="form-group">
+                            <label>Base URL:</label>
+                            <input type="text" name="doubao_base_url"
+                                   value="{{ current_config.get('doubao_base_url', '') }}"
+                                   placeholder="{{ current_config.get('doubao_base_url', 'https://ark.cn-beijing.volces.com/api/v3') }}">
+                        </div>
+                        <div class="form-group">
+                            <label>默认模型:</label>
+                            <input type="text" name="doubao_model"
+                                   value="{{ current_config.get('doubao_model', '') }}"
+                                   placeholder="{{ current_config.get('doubao_model', 'doubao-seed-1-6-251015') }}">
+                        </div>
+                        <div class="form-group">
+                            <label>请求超时 (秒):</label>
+                            <input type="number" name="doubao_timeout" min="10" max="180" step="5"
+                                   value="{{ current_config.get('doubao_timeout', '') }}"
+                                   placeholder="{{ current_config.get('doubao_timeout', '60') }}">
+                        </div>
+                        <div class="form-group">
+                            <label>思维模式类型 (可选):</label>
+                            <input type="text" name="doubao_thinking_mode"
+                                   value="{{ current_config.get('doubao_thinking_mode', '') }}"
+                                   placeholder="例如: deep-thinking">
+                            <small style="color: #7f8c8d;">留空时使用默认模式，可配置为 deep-thinking 等 Ark 支持的类型。</small>
                         </div>
                     {% elif provider == "azure_openai" %}
                         <div class="form-group">
@@ -2479,6 +2513,9 @@ async function testProvider(providerName) {
             case 'google':
                 testResult = await testGoogleProvider(config);
                 break;
+            case 'doubao':
+                testResult = await testDoubaoProvider(config);
+                break;
             case 'azure_openai':
                 testResult = await testAzureOpenAIProvider(config);
                 break;
@@ -2997,6 +3034,113 @@ async function test302AIProvider(config) {
             success: false,
             error: error.message,
             detail: `302.AI 测试失败: ${error.message}`
+        };
+    }
+}
+
+// 测试 Doubao 提供者
+async function testDoubaoProvider(config) {
+    try {
+        let apiKey = config.doubao_api_key;
+        let baseUrl = config.doubao_base_url || 'https://ark.cn-beijing.volces.com/api/v3';
+        let model = config.doubao_model || 'doubao-seed-1-6-251015';
+        let timeout = config.doubao_timeout;
+        let thinkingMode = config.doubao_thinking_mode;
+
+        const hasOwn = Object.prototype.hasOwnProperty;
+        const needsServerConfig = !apiKey
+            || !hasOwn.call(config, 'doubao_base_url')
+            || !hasOwn.call(config, 'doubao_model')
+            || !hasOwn.call(config, 'doubao_timeout')
+            || !hasOwn.call(config, 'doubao_thinking_mode');
+
+        if (needsServerConfig) {
+            const configResponse = await fetch('/api/config/ai_providers');
+            if (configResponse.ok) {
+                const configResult = await configResponse.json();
+                if (configResult.success && configResult.config) {
+                    if (!apiKey && configResult.config.doubao_api_key) {
+                        apiKey = configResult.config.doubao_api_key;
+                    }
+                    if (!hasOwn.call(config, 'doubao_base_url') && configResult.config.doubao_base_url) {
+                        baseUrl = configResult.config.doubao_base_url;
+                    }
+                    if (!hasOwn.call(config, 'doubao_model') && configResult.config.doubao_model) {
+                        model = configResult.config.doubao_model;
+                    }
+                    if (!hasOwn.call(config, 'doubao_timeout') && configResult.config.doubao_timeout !== undefined) {
+                        timeout = configResult.config.doubao_timeout;
+                    }
+                    if (!hasOwn.call(config, 'doubao_thinking_mode') && configResult.config.doubao_thinking_mode) {
+                        thinkingMode = configResult.config.doubao_thinking_mode;
+                    }
+                }
+            }
+        }
+
+        if (!apiKey) {
+            throw new Error('请先配置 Doubao API Key');
+        }
+
+        const requestBody = {
+            api_key: apiKey,
+            base_url: baseUrl,
+            model: model,
+        };
+
+        const numericTimeout = Number(timeout);
+        if (Number.isFinite(numericTimeout) && numericTimeout > 0) {
+            requestBody.timeout = Math.min(Math.round(numericTimeout), 180);
+        }
+
+        const normalizedThinking = typeof thinkingMode === 'string' ? thinkingMode.trim() : '';
+        if (normalizedThinking) {
+            requestBody.thinking_mode = normalizedThinking;
+        }
+
+        const response = await fetch('/api/ai/providers/doubao/test', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(requestBody)
+        });
+
+        if (!response.ok) {
+            let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+            try {
+                const errorData = await response.json();
+                errorMessage = errorData.error || errorData.detail || errorData.message || errorMessage;
+            } catch (_) {}
+            throw new Error(errorMessage);
+        }
+
+        const result = await response.json();
+        if (result.success) {
+            const usage = result.usage || {};
+            const promptTokens = usage.prompt_tokens ?? usage.input_tokens ?? 0;
+            const completionTokens = usage.completion_tokens ?? usage.output_tokens ?? 0;
+            const totalTokens = usage.total_tokens ?? (promptTokens + completionTokens);
+
+            return {
+                success: true,
+                provider: result.provider || 'doubao',
+                model: result.model || model,
+                response_preview: result.response_preview || '',
+                usage: {
+                    prompt_tokens: promptTokens,
+                    completion_tokens: completionTokens,
+                    total_tokens: totalTokens
+                }
+            };
+        }
+
+        throw new Error(result.error || result.detail || result.message || 'Doubao 测试失败');
+    } catch (error) {
+        return {
+            success: false,
+            error: error.message,
+            detail: `Doubao 测试失败: ${error.message}`
         };
     }
 }
