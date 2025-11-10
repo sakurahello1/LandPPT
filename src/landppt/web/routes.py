@@ -22,6 +22,17 @@ import logging
 import time
 from typing import Optional, Dict, Any, List
 
+# Supported AI provider identifiers for configuration UI
+ALL_AI_PROVIDERS = [
+    "openai",
+    "anthropic",
+    "google",
+    "doubao",
+    "azure_openai",
+    "ollama",
+    "302ai",
+]
+
 from ..api.models import PPTGenerationRequest, PPTProject, TodoBoard, FileOutlineGenerationRequest
 from ..services.enhanced_ppt_service import EnhancedPPTService
 from ..services.pdf_to_pptx_converter import get_pdf_to_pptx_converter
@@ -263,14 +274,19 @@ async def web_ai_config(
     config_service = get_config_service()
     current_config = config_service.get_all_config()
 
+    provider_options = ALL_AI_PROVIDERS
+    provider_status = {
+        provider: ai_config.is_provider_available(provider)
+        for provider in provider_options
+    }
+    available_providers = ai_config.get_available_providers()
+
     return templates.TemplateResponse("ai_config.html", {
         "request": request,
         "current_provider": ai_config.default_ai_provider,
-        "available_providers": ai_config.get_available_providers(),
-        "provider_status": {
-            provider: ai_config.is_provider_available(provider)
-            for provider in ai_config.get_available_providers()
-        },
+        "available_providers": available_providers,
+        "provider_status": provider_status,
+        "provider_options": provider_options,
         "current_config": current_config,
         "user": user.to_dict()
     })
@@ -282,7 +298,10 @@ async def get_openai_models(
 ):
     """Proxy endpoint to get OpenAI models list, avoiding CORS issues - uses frontend provided config"""
     try:
-        import aiohttp
+        try:
+            import aiohttp
+        except ImportError:  # pragma: no cover - optional dependency
+            aiohttp = None  # type: ignore
         import json
         
         # Get configuration from frontend request
@@ -293,7 +312,7 @@ async def get_openai_models(
         logger.info(f"Frontend requested models from: {base_url}")
         
         if not api_key:
-            return {"success": False, "error": "API Key is required"}
+            return {"success": False, "status": "error", "error": "API Key is required"}
         
         # Ensure base URL ends with /v1
         if not base_url.endswith('/v1'):
@@ -432,6 +451,187 @@ async def test_openai_provider_proxy(
             "status": "error",  # Add status field for compatibility
             "error": str(e)
         }
+
+
+@router.post("/api/ai/providers/doubao/test")
+async def test_doubao_provider_proxy(
+    request: Request,
+    user: User = Depends(get_current_user_required)
+):
+    """Proxy endpoint to test Doubao (Volcengine Ark) provider configuration"""
+    try:
+        try:
+            from volcenginesdkarkruntime import Ark  # type: ignore
+        except ImportError:  # pragma: no cover - optional dependency
+            Ark = None  # type: ignore
+
+        import aiohttp
+
+        payload_error_response = {
+            "success": False,
+            "status": "error",
+        }
+
+        data = await request.json()
+        base_url = (data.get("base_url") or "https://ark.cn-beijing.volces.com/api/v3").rstrip("/")
+        api_key = (data.get("api_key") or "").strip()
+        model = data.get("model") or "doubao-seed-1-6-251015"
+        timeout = data.get("timeout")
+        thinking_mode = data.get("thinking_mode") or data.get("thinking")
+        extra_headers = data.get("extra_headers") if isinstance(data.get("extra_headers"), dict) else None
+
+        if not api_key:
+            error_payload = dict(payload_error_response)
+            error_payload["error"] = "API Key is required"
+            return error_payload
+
+        request_kwargs: Dict[str, Any] = {
+            "model": model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "请用10个字以内回复：豆包连通正常"
+                        }
+                    ]
+                }
+            ],
+            "temperature": 0,
+            "top_p": 1.0,
+        }
+
+        if isinstance(thinking_mode, str) and thinking_mode.strip():
+            request_kwargs["thinking"] = {"type": thinking_mode.strip()}
+        elif isinstance(thinking_mode, dict):
+            request_kwargs["thinking"] = thinking_mode
+
+        def _flatten_doubao_content(content: Any) -> str:
+            if isinstance(content, list):
+                fragments: List[str] = []
+                for part in content:
+                    if isinstance(part, dict):
+                        part_type = part.get("type")
+                        if part_type == "text":
+                            fragments.append(part.get("text", ""))
+                        elif part_type in {"image_url", "video_url"}:
+                            payload = part.get(part_type, {})
+                            if isinstance(payload, dict) and payload.get("url"):
+                                fragments.append(f"[{part_type}] {payload['url']}")
+                        elif part_type == "json":
+                            fragments.append(json.dumps(part.get("json"), ensure_ascii=False))
+                        elif "content" in part:
+                            fragments.append(str(part["content"]))
+                    else:
+                        fragments.append(str(part))
+                return "\n".join(fragment for fragment in fragments if fragment)
+            if isinstance(content, dict):
+                return json.dumps(content, ensure_ascii=False)
+            if content is None:
+                return ""
+            return str(content)
+
+        def _format_success(raw: Dict[str, Any]) -> Dict[str, Any]:
+            preview = ""
+            if isinstance(raw, dict):
+                choices = raw.get("choices") or []
+                if choices:
+                    first_choice = choices[0]
+                    message_payload = first_choice.get("message") or {}
+                    content_payload = message_payload.get("content")
+                    preview = _flatten_doubao_content(content_payload)
+                elif raw.get("output") is not None:
+                    preview = _flatten_doubao_content(raw.get("output"))
+
+            usage_block = raw.get("usage", {}) if isinstance(raw, dict) else {}
+            prompt_tokens = usage_block.get("prompt_tokens") or usage_block.get("input_tokens") or 0
+            completion_tokens = usage_block.get("completion_tokens") or usage_block.get("output_tokens") or 0
+            total_tokens = usage_block.get("total_tokens") or (prompt_tokens + completion_tokens)
+
+            return {
+                "success": True,
+                "status": "success",
+                "provider": "doubao",
+                "model": raw.get("model", model) if isinstance(raw, dict) else model,
+                "response_preview": preview,
+                "usage": {
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": total_tokens,
+                }
+            }
+
+        # Prefer Ark SDK when available
+        if Ark is not None:
+            def _call_with_ark():
+                client = Ark(api_key=api_key, base_url=base_url)
+                return client.chat.completions.create(**request_kwargs)
+
+            try:
+                ark_response = await asyncio.to_thread(_call_with_ark)
+                if hasattr(ark_response, "model_dump"):
+                    ark_data = ark_response.model_dump()
+                elif hasattr(ark_response, "model_dump_json"):
+                    ark_data = json.loads(ark_response.model_dump_json())
+                elif hasattr(ark_response, "to_dict"):
+                    ark_data = ark_response.to_dict()
+                else:
+                    ark_data = json.loads(json.dumps(ark_response, default=lambda o: getattr(o, "__dict__", str(o))))
+
+                logger.info("Doubao provider test succeeded via Ark SDK")
+                return _format_success(ark_data)
+            except Exception as sdk_error:
+                logger.warning("Ark SDK test request failed, using HTTP fallback: %s", sdk_error)
+
+        if aiohttp is None:
+            raise RuntimeError("aiohttp is required for Doubao HTTP testing but is not installed")
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        if extra_headers:
+            for key, value in extra_headers.items():
+                headers[str(key)] = str(value)
+
+        timeout_value = 60
+        if isinstance(timeout, (int, float)) and timeout > 0:
+            timeout_value = min(int(timeout), 180)
+
+        payload = dict(request_kwargs)
+        chat_url = f"{base_url}/chat/completions"
+        logger.info(f"Testing Doubao provider via HTTP at: {chat_url} with model {model}")
+
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout_value)) as session:
+            async with session.post(chat_url, headers=headers, json=payload) as response:
+                text = await response.text()
+                if response.status == 200:
+                    try:
+                        http_data = json.loads(text)
+                    except json.JSONDecodeError:
+                        logger.error("Doubao API returned non-JSON response")
+                        error_payload = dict(payload_error_response)
+                        error_payload.update({
+                            "error": "API 返回了无法解析的响应",
+                            "raw_response": text,
+                        })
+                        return error_payload
+
+                    logger.info("Doubao provider test succeeded via HTTP")
+                    return _format_success(http_data)
+
+                logger.error(f"Doubao API returned status {response.status}: {text}")
+                error_payload = dict(payload_error_response)
+                error_payload.update({
+                    "error": f"API 返回状态码 {response.status}",
+                    "details": text,
+                })
+                return error_payload
+
+    except Exception as e:
+        logger.error(f"Error testing Doubao provider: {e}")
+        return {"success": False, "status": "error", "error": str(e)}
 
 @router.get("/scenarios", response_class=HTMLResponse)
 async def web_scenarios(
