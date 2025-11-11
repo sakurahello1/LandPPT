@@ -3116,7 +3116,8 @@ async function testDoubaoProvider(config) {
         }
 
         const result = await response.json();
-        if (result.success) {
+        const isSuccess = result.success === true || result.status === 'success';
+        if (isSuccess) {
             const usage = result.usage || {};
             const promptTokens = usage.prompt_tokens ?? usage.input_tokens ?? 0;
             const completionTokens = usage.completion_tokens ?? usage.output_tokens ?? 0;
@@ -3135,7 +3136,7 @@ async function testDoubaoProvider(config) {
             };
         }
 
-        throw new Error(result.error || result.detail || result.message || 'Doubao 测试失败');
+    throw new Error(result.error || result.detail || result.message || 'Doubao 测试失败');
     } catch (error) {
         return {
             success: false,
