@@ -202,6 +202,8 @@ class AIConfig(BaseSettings):
             return self._normalize_optional_str(self.anthropic_model)
         if provider_key in ("google", "gemini"):
             return self._normalize_optional_str(self.google_model)
+        if provider_key == "doubao":
+            return self._normalize_optional_str(self.doubao_model)
         if provider_key == "302ai":
             return self._normalize_optional_str(self.ai_302ai_model)
         if provider_key == "ollama":
